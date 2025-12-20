@@ -100,6 +100,8 @@ def plot_option(img_full, coords, spectra, v_step, pool_idx, train_idx=None, opt
     ax2.plot(v_step, spectra[coords[pool_idx[1], 0], coords[pool_idx[1], 1]], c = 'k', label = f"Opt 1; idx: pool-{pool_idx[1]}, train-{train_idx[1]}")
     ax2.legend(loc = 1)
     plt.show()
+    plt.pause(0.1)
+    plt.close()
 
 
 def plot_predictions(coords, y, coord_train, mean, var, step, total_steps):
@@ -148,6 +150,8 @@ def plot_predictions(coords, y, coord_train, mean, var, step, total_steps):
 
     plt.tight_layout()
     plt.show()
+    plt.pause(0.1)
+    plt.close()
 
 
 def acquire_preference(img_full, train_indices, comparison_pairs, coords, spectra, v_step):
