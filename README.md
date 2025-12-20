@@ -13,9 +13,10 @@ The system learns to predict a scalar target value (e.g., preference score) from
 ## Usage
 
 ### Basic Workflow
-!pip install git+https://github.com/yongtaoliu/DeepKernelPairwiseGP.git
 
 ```python
+!pip install git+https://github.com/yongtaoliu/DeepKernelPairwiseGP.git
+
 from model import fit_dkpg, predict_utility
 from acq import acq_eubo, get_user_preference, sample_comparison_pairs
 from utils import get_grid_coords, get_subimages, plot_option, plot_predictions, acquire_preference
