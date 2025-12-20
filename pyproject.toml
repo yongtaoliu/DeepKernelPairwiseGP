@@ -1,7 +1,14 @@
 [project]
-name = "deepkernelpairwisegp"
+name = "DeepKernelPairwiseGP"
 version = "0.1.0"
-description = "Add your description here"
+description = "Deep Kernel Learning with Pairwise Gaussian Processes for active learning with preference feedback from experts"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "numpy>=2.3.5",
+    "matplotlib>=3.10.8",
+    "torch>=2.9.1",
+    "gpytorch>=0.14.3",
+    "botorch>=0.16.1",
+    "matplotlib>=3.10.8"]
+
