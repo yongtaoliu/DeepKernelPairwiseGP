@@ -2,6 +2,10 @@
 name = "DeepKernelPairwiseGP"
 version = "0.1.0"
 description = "Deep Kernel Learning with Pairwise Gaussian Processes for active learning with preference feedback from experts"
+authors = [
+    {name = "Yongtao Liu", email = "youngtaoliu@gmail.com"}
+]
+
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -9,6 +13,14 @@ dependencies = [
     "gpytorch>=0.14.3",
     "botorch>=0.16.1"]
 
+[project.urls]
+Homepage = "https://github.com/yongtaoliu/DeepKernelPairwiseGP"
+Repository = "https://github.com/yongtaoliu/DeepKernelPairwiseGP"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [tool.setuptools]
-packages = ["model", "acq", "utils"]
+py-modules = ["model", "acq", "utils"]
 
