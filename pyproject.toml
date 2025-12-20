@@ -9,3 +9,6 @@ dependencies = [
     "gpytorch>=0.14.3",
     "botorch>=0.16.1"]
 
+[tool.setuptools]
+packages = ["model", "acq", "utils"]
+
