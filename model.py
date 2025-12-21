@@ -43,7 +43,7 @@ class DeepKernelPairwiseGP(nn.Module):
         datapoints,
         comparisons,
         input_dim,
-        feature_dim=2,
+        feature_dim=16,
         hidden_dims=[256, 128, 64],
         jitter=1e-4
     ):
@@ -91,7 +91,7 @@ def train_dkpg(
     datapoints,
     comparisons,
     input_dim,
-    feature_dim=2,
+    feature_dim=16,
     hidden_dims=[256, 128, 64],
     num_epochs=200,
     lr_features=1e-4,
@@ -156,7 +156,7 @@ def train_dkpg(
     return model, losses
 
 
-def fit_dkpg(X_train, train_comp, num_epochs=2000):
+def fit_dkpg(X_train, train_comp, feature_dim=16, num_epochs=2000, verbose=True):
     """
     Fit Deep Kernel PairwiseGP model.
 
@@ -185,7 +185,7 @@ def fit_dkpg(X_train, train_comp, num_epochs=2000):
         datapoints=X_train,
         comparisons=train_comp,
         input_dim=input_dim,
-        feature_dim=2,
+        feature_dim=feature_dim,
         hidden_dims=[256, 128, 64],
         num_epochs=num_epochs,
         lr_features=1e-4,
@@ -194,13 +194,13 @@ def fit_dkpg(X_train, train_comp, num_epochs=2000):
 
     pref_model = dkl_model.gp_model
     mll = PairwiseLaplaceMarginalLogLikelihood(pref_model.likelihood, pref_model)
-
-    # plt.figure(figsize=(4, 2))
-    # plt.plot(losses)
-    # plt.xlabel('Epoch')
-    # plt.ylabel('Negative MLL')
-    # plt.title('Training Loss')
-    # plt.show()
+    if verbose:
+        plt.figure(figsize=(4, 2))
+        plt.plot(losses)
+        plt.xlabel('Epoch')
+        plt.ylabel('Negative MLL')
+        plt.title('Training Loss')
+        plt.show()
 
     return mll, pref_model, dkl_model
 

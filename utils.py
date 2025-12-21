@@ -66,7 +66,7 @@ def get_subimages(img, coordinates, window_size):
             np.array(valid_coords), 
             np.array(valid_indices))
 
-def plot_option(img_full, coords, spectra, v_step, pool_idx, train_idx=None, option_label="Option"):
+def plot_option(img_full, coords, spectra, v_step, pool_idx, train_idx=None):
     """
     Plot a single option for user comparison.
 
@@ -152,7 +152,6 @@ def plot_predictions(coords, y, coord_train, mean, var, step, total_steps):
     plt.show()
     plt.pause(0.1)
     plt.close()
-
 
 def acquire_preference(img_full, train_indices, comparison_pairs, coords, spectra, v_step):
     """
