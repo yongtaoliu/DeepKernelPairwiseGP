@@ -160,6 +160,7 @@ def train_dkpg(
     feature_dim=16,
     hidden_dims=[256, 128, 64],
     confidence_weights=None,
+    use_custom_mll=None,
     num_epochs=1000,
     lr_features=1e-4,
     lr_gp=1e-2,
