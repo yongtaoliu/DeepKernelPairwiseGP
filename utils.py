@@ -202,7 +202,7 @@ def acquire_preference(img_full, train_indices, comparison_pairs, coords, spectr
                 train_idx1, train_idx2, train_indices, y_groundtruth,
                 pair_num=pair_idx + 1,
                 total_pairs=len(comparison_pairs),
-                cconfidence_factors=confidence_factors)
+                confidence_factors=confidence_factors)
         
         elif mode == 'human':
             winner, loser, confidence = get_user_preference(
