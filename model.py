@@ -33,6 +33,62 @@ class ImageFeatureExtractor(nn.Module):
     def forward(self, x):
         return self.network(x)
 
+class ConfidenceWeightedMLL(nn.Module):
+    """
+    Marginal log likelihood with confidence weighting.
+    """
+    
+    def __init__(self, likelihood, model, confidence_weights):
+        super().__init__()
+        self.likelihood = likelihood
+        self.model = model
+        
+        if confidence_weights.dtype != torch.float64:
+            confidence_weights = confidence_weights.double()
+        self.confidence_weights = confidence_weights
+        
+        # Normalize weights
+        if confidence_weights.sum() > 0:
+            self.normalized_weights = confidence_weights / confidence_weights.sum() * len(confidence_weights)
+        else:
+            self.normalized_weights = confidence_weights
+    
+    def forward(self, output, target):
+        """
+        Compute weighted marginal log likelihood.
+        """
+        mean = output.mean
+        comparisons = target
+        
+        total_weighted_ll = torch.tensor(0.0, dtype=torch.float64, device=mean.device)
+        
+        for i in range(len(comparisons)):
+            winner_idx = comparisons[i, 0].long()
+            loser_idx = comparisons[i, 1].long()
+            
+            # Utility difference
+            mean_diff = mean[winner_idx] - mean[loser_idx]
+            
+            # Variance of difference
+            var_winner = output.variance[winner_idx]
+            var_loser = output.variance[loser_idx]
+            var_diff = var_winner + var_loser
+            
+            # Log probability
+            std_diff = torch.sqrt(var_diff + 1e-6)
+            z_score = mean_diff / std_diff
+            
+            # Normal CDF
+            normal_cdf = 0.5 * (1 + torch.erf(z_score / torch.sqrt(torch.tensor(2.0, dtype=torch.float64))))
+            log_prob = torch.log(normal_cdf + 1e-8)
+            
+            # Weight by confidence (all in float64)
+            confidence = self.normalized_weights[i]
+            weighted_log_prob = confidence * log_prob
+            
+            total_weighted_ll = total_weighted_ll + weighted_log_prob
+        
+        return total_weighted_ll
 
 class DeepKernelPairwiseGP(nn.Module):
     """
@@ -45,6 +101,7 @@ class DeepKernelPairwiseGP(nn.Module):
         input_dim,
         feature_dim=16,
         hidden_dims=[256, 128, 64],
+        confidence_weights=None,
         jitter=1e-4
     ):
         super().__init__()
@@ -52,8 +109,7 @@ class DeepKernelPairwiseGP(nn.Module):
         self.feature_extractor = ImageFeatureExtractor(
             input_dim=input_dim,
             feature_dim=feature_dim,
-            hidden_dims=hidden_dims
-        )
+            hidden_dims=hidden_dims)
 
         self.feature_extractor = self.feature_extractor.to(
             device=datapoints.device,
@@ -62,21 +118,31 @@ class DeepKernelPairwiseGP(nn.Module):
         with torch.no_grad():
             train_features = self.feature_extractor(datapoints)
 
-        covar_module = ScaleKernel(
-            RBFKernel(ard_num_dims=feature_dim)
-        )
+        covar_module = ScaleKernel(RBFKernel(ard_num_dims=feature_dim))
 
         self.gp_model = PairwiseGP(
             datapoints=train_features,
             comparisons=comparisons,
             covar_module=covar_module,
             input_transform=Normalize(d=feature_dim),
-            jitter=jitter
-        )
+            jitter=jitter)
 
         self.train_datapoints = datapoints
         self.feature_dim = feature_dim
         self.input_dim = input_dim
+
+        # Store confidence weights
+        if confidence_weights is not None:
+            if confidence_weights.dtype != torch.float64:
+                confidence_weights = confidence_weights.double()
+            self.confidence_weights = confidence_weights.to(datapoints.device)
+        else:
+            self.confidence_weights = torch.ones(
+                len(comparisons), 
+                dtype=torch.float64, 
+                device=datapoints.device)
+            
+        self.register_buffer('_confidence_weights', self.confidence_weights)
 
     def forward(self, x):
         features = self.feature_extractor(x)
@@ -93,13 +159,55 @@ def train_dkpg(
     input_dim,
     feature_dim=16,
     hidden_dims=[256, 128, 64],
-    num_epochs=200,
+    confidence_weights=None,
+    num_epochs=1000,
     lr_features=1e-4,
     lr_gp=1e-2,
     device='cuda' if torch.cuda.is_available() else 'cpu',
     verbose=True
 ):
-    """Train PairwiseGP with deep kernel learning."""
+    """
+    Train Deep Kernel PairwiseGP with flexible MLL selection.
+    
+    Parameters
+    ----------
+    datapoints : np.ndarray or torch.Tensor
+        Training datapoints, shape (n, input_dim)
+    comparisons : np.ndarray or torch.Tensor
+        Pairwise comparisons, shape (m, 2)
+    input_dim : int
+        Input dimensionality
+    feature_dim : int
+        Learned feature dimensionality
+    hidden_dims : list of int
+        Hidden layer dimensions
+    confidence_weights : np.ndarray or torch.Tensor, optional
+        Confidence weights for comparisons, shape (m,)
+        If provided, forces use of custom MLL
+    use_custom_mll : bool, optional
+        If True, use ConfidenceWeightedMLL (with weights=1.0 if not provided)
+        If False, use standard PairwiseLaplaceMarginalLogLikelihood
+        If None (default), auto-select:
+            - Use custom if confidence_weights provided
+            - Use standard otherwise
+    num_epochs : int
+        Number of training epochs
+    lr_features : float
+        Learning rate for feature extractor
+    lr_gp : float
+        Learning rate for GP parameters
+    device : str
+        Device to use
+    verbose : bool
+        Print training progress
+    
+    Returns
+    -------
+    model : DeepKernelPairwiseGP
+        Trained model
+    losses : list
+        Training losses
+    """
     if not isinstance(datapoints, torch.Tensor):
         datapoints = torch.from_numpy(datapoints).double()
     else:
@@ -110,15 +218,54 @@ def train_dkpg(
     else:
         comparisons = comparisons.long()
 
+    # Confidence weights
+    if confidence_weights is not None:
+        if not isinstance(confidence_weights, torch.Tensor):
+            confidence_weights = torch.from_numpy(confidence_weights).double()  # ✅ double
+        else:
+            confidence_weights = confidence_weights.double()  # ✅ double
+        confidence_weights = confidence_weights.to(device)
+        
+        if verbose:
+            print(f"confidence min: {confidence_weights.min()}, "
+                  f"confidence max: {confidence_weights.max()}, ")
+    else:
+        confidence_weights = torch.ones(
+            len(comparisons), 
+            dtype=torch.float64,  
+            device=device)
+
     datapoints = datapoints.to(device)
     comparisons = comparisons.to(device)
+
+    # ===== MLL SELECTION LOGIC =====
+    if use_custom_mll is None:
+        # Auto-select: use custom if confidence weights are not all 1.0
+        has_varying_confidence = not torch.allclose(
+            confidence_weights, 
+            torch.ones_like(confidence_weights)
+        )
+        use_custom_mll = has_varying_confidence
+        
+        if verbose:
+            if has_varying_confidence:
+                print("Auto-selected: Custom ConfidenceWeightedMLL (varying confidence weights)")
+            else:
+                print("Auto-selected: Standard PairwiseLaplaceMarginalLogLikelihood (equal weights)")
+    else:
+        if verbose:
+            if use_custom_mll:
+                print("User-selected: Custom ConfidenceWeightedMLL")
+            else:
+                print("User-selected: Standard PairwiseLaplaceMarginalLogLikelihood")
 
     model = DeepKernelPairwiseGP(
         datapoints=datapoints,
         comparisons=comparisons,
         input_dim=input_dim,
         feature_dim=feature_dim,
-        hidden_dims=hidden_dims
+        hidden_dims=hidden_dims,
+        confidence_weights=confidence_weights
     ).to(device)
 
     optimizer = torch.optim.Adam([
@@ -126,10 +273,18 @@ def train_dkpg(
         {'params': model.gp_model.parameters(), 'lr': lr_gp}
     ])
 
-    mll = PairwiseLaplaceMarginalLogLikelihood(
-        model.gp_model.likelihood,
-        model.gp_model
-    )
+    # ===== MLL SELECTION =====
+    if use_custom_mll:
+        # Use confidence-weighted MLL
+        mll = ConfidenceWeightedMLL(
+            model.gp_model.likelihood,
+            model.gp_model,
+            confidence_weights)
+    else:
+        # Use standard BoTorch MLL (faster, more accurate when weights are equal)
+        mll = PairwiseLaplaceMarginalLogLikelihood(
+            model.gp_model.likelihood,
+            model.gp_model)
 
     model.train()
     losses = []
@@ -156,25 +311,41 @@ def train_dkpg(
     return model, losses
 
 
-def fit_dkpg(X_train, train_comp, feature_dim=16, num_epochs=2000, verbose=True):
+def fit_dkpg(X_train, train_comp, confidence_weights=None, 
+             use_custom_mll=None, feature_dim=16, num_epochs=2000, verbose=True):
     """
-    Fit Deep Kernel PairwiseGP model.
+    Fit Deep Kernel PairwiseGP model with optional confidence weighting.
 
     Parameters
     ----------
-    X_train : np.ndarray
-      High-dimensional features (N, D) - flattened image patches
-    train_comp : np.ndarray
-      Pairwise comparisons (M, 2)
+    X_train : np.ndarray or torch.Tensor
+        High-dimensional features (N, D) - flattened image patches
+    train_comp : np.ndarray or torch.Tensor
+        Pairwise comparisons (M, 2), each row is [winner_idx, loser_idx]
+    confidence_weights : np.ndarray or torch.Tensor, optional
+        Confidence weights for each comparison, shape (M,)
+        Values should be in [0, 1] where 1.0 = fully confident
+        If provided, uses ConfidenceWeightedMLL
+    use_custom_mll : bool, optional
+        Explicitly choose MLL type:
+        - True: Use ConfidenceWeightedMLL (with weights=1.0 if not provided)
+        - False: Use standard PairwiseLaplaceMarginalLogLikelihood
+        - None (default): Auto-select based on confidence_weights
+    feature_dim : int
+        Dimensionality of learned feature space
     num_epochs : int
         Number of training epochs
+    verbose : bool
+        Print training information
 
     Returns
     -------
-    mll : PairwiseLaplaceMarginalLogLikelihood
-        Marginal log likelihood
+    mll : MarginalLogLikelihood
+        Marginal log likelihood object (for reference)
+    pref_model : PairwiseGP
+        The GP model (operates in feature space)
     dkl_model : DeepKernelPairwiseGP
-        Trained deep kernel model
+        Complete deep kernel model with feature extractor
     """
 
     print("Training Deep Kernel PairwiseGP Model")
@@ -187,13 +358,27 @@ def fit_dkpg(X_train, train_comp, feature_dim=16, num_epochs=2000, verbose=True)
         input_dim=input_dim,
         feature_dim=feature_dim,
         hidden_dims=[256, 128, 64],
+        confidence_weights=confidence_weights,
+        use_custom_mll=use_custom_mll,
         num_epochs=num_epochs,
         lr_features=1e-4,
         lr_gp=1e-2,
-        verbose=True)
+        verbose=verbose)
 
     pref_model = dkl_model.gp_model
-    mll = PairwiseLaplaceMarginalLogLikelihood(pref_model.likelihood, pref_model)
+    # Create MLL for reference (matches what was used in training)
+    if confidence_weights is not None or use_custom_mll:
+        # Use same confidence weights as training
+        conf_weights = dkl_model.confidence_weights
+        mll = ConfidenceWeightedMLL(
+            pref_model.likelihood, 
+            pref_model,
+            conf_weights)
+    else: # Standard MLL
+        mll = PairwiseLaplaceMarginalLogLikelihood(
+            pref_model.likelihood, 
+            pref_model)
+        
     if verbose:
         plt.figure(figsize=(4, 2))
         plt.plot(losses)
