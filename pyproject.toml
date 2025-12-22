@@ -1,6 +1,6 @@
 [project]
 name = "DeepKernelPairwiseGP"
-version = "0.1.0"
+version = "0.1.1"
 description = "Deep Kernel Learning with Pairwise Gaussian Processes for active learning with preference feedback from experts"
 authors = [
     {name = "Yongtao Liu", email = "youngtaoliu@gmail.com"}

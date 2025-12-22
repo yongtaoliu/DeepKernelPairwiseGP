@@ -221,9 +221,9 @@ def train_dkpg(
     # Confidence weights
     if confidence_weights is not None:
         if not isinstance(confidence_weights, torch.Tensor):
-            confidence_weights = torch.from_numpy(confidence_weights).double()  # ✅ double
+            confidence_weights = torch.from_numpy(confidence_weights).double()  
         else:
-            confidence_weights = confidence_weights.double()  # ✅ double
+            confidence_weights = confidence_weights.double()  
         confidence_weights = confidence_weights.to(device)
         
         if verbose:
