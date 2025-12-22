@@ -153,7 +153,8 @@ def plot_predictions(coords, y, coord_train, mean, var, step, total_steps):
     plt.pause(0.1)
     plt.close()
 
-def acquire_preference(img_full, train_indices, comparison_pairs, coords, spectra, v_step):
+def acquire_preference(img_full, train_indices, comparison_pairs, coords, spectra, v_step, 
+                       y_groundtruth=None, mode='human', confidence_factors=False):
     """
     Display all comparison pairs and acquire user preferences.
 
@@ -168,9 +169,15 @@ def acquire_preference(img_full, train_indices, comparison_pairs, coords, spectr
     coords : np.ndarray
         All coordinates
     spectra : np.ndarray
-        All spectra
+        All targets
     v_step : np.ndarray
         Voltage steps
+    y_groundtruth: np.ndarray
+        Ground Truth for simulating experiment
+    mode: str
+        Human or simulated mode
+    confidence_factors: list
+        confidence factors.
 
     Returns
     -------
@@ -188,10 +195,67 @@ def acquire_preference(img_full, train_indices, comparison_pairs, coords, spectr
                    pool_idx=[pool_idx1,pool_idx2], train_idx=[train_idx1,train_idx2])
 
         # Get preference
-        preferred_idx, dispreferred_idx = get_user_preference(train_idx1, train_idx2, 
-                                                              pair_num=pair_idx + 1, total_pairs=len(comparison_pairs))
+        if mode == 'simulated':
+            if y is None:
+                raise ValueError("Ground truth 'y' required for simulated mode")
+            winner, loser, confidence = get_simulated_preference(
+                train_idx1, train_idx2, train_indices, y_groundtruth,
+                pair_num=pair_idx + 1,
+                total_pairs=len(comparison_pairs),
+                cconfidence_factors=confidence_factors)
+        
+        elif mode == 'human':
+            winner, loser, confidence = get_user_preference(
+                train_idx1, train_idx2,
+                pair_num=pair_idx + 1,
+                total_pairs=len(comparison_pairs),
+                confidence_factors=confidence_factors)
 
-        new_comparisons = [preferred_idx, dispreferred_idx]
-        print(f"Recorded: train_idx {preferred_idx} > train_idx {dispreferred_idx}")
+        new_comparisons = [winner, loser]
+        print(f"Recorded: train_idx {winner} > train_idx {loser}")
 
-    return torch.tensor(new_comparisons, dtype=torch.long)
+    return torch.tensor(new_comparisons, dtype=torch.long), torch.tensor(confidence, dtype=torch.float64)
+
+def get_simulated_preference(train_idx1, train_idx2, train_indices, y_groundtruth, 
+                            pair_num=1, total_pairs=1, confidence_factors=[0.5, 0.75, 1.0]):
+    """
+    Simulate user preference using ground truth.
+    
+    """
+    pool_idx1 = train_indices[train_idx1]
+    pool_idx2 = train_indices[train_idx2]
+    
+    y1 = y_groundtruth[pool_idx1]
+    y2 = y_groundtruth[pool_idx2]
+    
+    # Determine true preference
+    if y1 > y2:
+        winner = train_idx1
+        loser = train_idx2
+        utility_diff = y1 - y2
+    else:
+        winner = train_idx2
+        loser = train_idx1
+        utility_diff = y2 - y1
+    
+    # Simulate confidence based on utility difference
+    if confidence_factors is not None:
+        # if utility_diff < 0.1:
+        #     confidence = 0.5
+        # elif utility_diff < 0.3:
+        #     confidence = 0.75
+        if y1 < 0.2 and y2 < 0.2:
+            confidence = confidence_factors[0]
+        elif utility_diff < 0.2:
+            confidence = confidence_factors[1]
+        else:
+            confidence = confidence_factors[2]
+    else:
+        confidence = 1.0
+    
+    print(f"Pair {pair_num}/{total_pairs} simulated")
+    print(f"train_idx {train_idx1}: y={y1:.4f}")
+    print(f"train_idx {train_idx2}: y={y2:.4f}")
+    print(f"{winner} > {loser} (confidence={confidence:.2f})")
+    
+    return winner, loser, confidence

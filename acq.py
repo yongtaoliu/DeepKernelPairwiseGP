@@ -291,34 +291,80 @@ def acq_eubo (dkl_model, X_pool, previous_comparisons=None, top_k=100):
 
     return selected_points
 
-def get_user_preference(train_idx1, train_idx2, pair_num=1, total_pairs=1):
+def get_user_preference(train_idx1, train_idx2, pair_num=1, total_pairs=1, 
+                       confidence_factors=[0.2, 0.75, 1.0]):
     """
-    Get user preference between two options.
+    Get user preference between two options with optional confidence weighting.
 
     Parameters
     ----------
-    pool_idx1, pool_idx2 : int
-        Pool indices of the two options
-    train_idx1, train_idx2 : int
-        Training indices
-    pair_num : int
-        Current pair number
-    total_pairs : int
-        Total number of pairs
+    train_idx1 : int
+        First training index to compare
+    train_idx2 : int
+        Second training index to compare
+    pair_num : int, optional (default=1)
+        Current pair number (for display)
+    total_pairs : int, optional (default=1)
+        Total number of pairs to compare (for display)
+    confidence_factors : list of float or None, optional (default=[0.5, 0.75, 1.0])
+        Confidence weights for 3 confidence levels:
+        - confidence_factors[0]: Slightly prefer (low confidence)
+        - confidence_factors[1]: Moderately prefer (medium confidence)
+        - confidence_factors[2]: Strongly prefer (high confidence)
+        If None, skip confidence collection and always return 1.0
 
     Returns
     -------
-    preferred_train_idx, dispreferred_train_idx : int
-        Training indices in order (winner, loser)
+    winner : int
+        Training index of preferred option
+    loser : int
+        Training index of dispreferred option
+    confidence : float
+        Confidence weight in range [0, 1]
+        - 1.0 if confidence_factors is None
+        - confidence_factors[i-1] for user input i ∈ {1, 2, 3}
     """
+    # Get preference
     while True:
         choice = input(f"Pair {pair_num}/{total_pairs} → Which is better? Enter 0 or 1:\n").strip()
         if choice == "0":
-            return train_idx1, train_idx2
+            winner, loser = train_idx1, train_idx2
+            break
         elif choice == "1":
-            return train_idx2, train_idx1
+            winner, loser = train_idx2, train_idx1
+            break
         else:
             print("Invalid input. Please enter 0 or 1.")
+    
+    # Get confidence if requested
+    if confidence_factors is not None:
+        while True:
+            conf_input = input(
+                "How confident are you?\n"
+                "  1 = Slightly prefer\n"
+                "  2 = Moderately prefer\n"
+                "  3 = Strongly prefer\n"
+                "Enter 1, 2, or 3: "
+            ).strip()
+            
+            if conf_input == "1":
+                confidence = confidence_factors[0]
+                break
+            elif conf_input == "2":
+                confidence = confidence_factors[1]
+                break
+            elif conf_input == "3":
+                confidence = confidence_factors[2]
+                break
+            else:
+                print("Invalid input. Please enter 1, 2, or 3.")
+        
+        print(f"Recorded: {winner} > {loser} (confidence={confidence:.2f})")
+    else:
+        confidence = 1.0  # Default: fully confident
+        print(f"Recorded: {winner} > {loser}")
+    
+    return winner, loser, confidence
 
 def sample_comparison_pairs(train_indices, n_pairs_per_point=1, best_train_idx=None, seed=None):
     """
