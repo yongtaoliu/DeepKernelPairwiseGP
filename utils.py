@@ -209,8 +209,6 @@ def acquire_preference(img_full, train_indices, comparison_pairs, coords, spectr
             
             idx1, idx2, comp_type, confidence = get_simulated_preference(
                 train_idx1, train_idx2, train_indices, y_groundtruth,
-                pair_num=pair_idx + 1,
-                total_pairs=len(comparison_pairs),
                 tie_threshold=tie_threshold,
                 confidence_factors=confidence_factors,
                 allow_ties=allow_ties
