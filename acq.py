@@ -292,7 +292,7 @@ def acq_eubo (dkl_model, X_pool, previous_comparisons=None, top_k=100):
     return selected_points
 
 def get_user_preference(train_idx1, train_idx2, pair_num=1, total_pairs=1, 
-                       confidence_factors=[0.2, 0.75, 1.0]):
+                       confidence_factors=[0.2, 0.75, 1.0], allow_ties=True):
     """
     Get user preference between two options with optional confidence weighting.
 
@@ -312,29 +312,53 @@ def get_user_preference(train_idx1, train_idx2, pair_num=1, total_pairs=1,
         - confidence_factors[1]: Moderately prefer (medium confidence)
         - confidence_factors[2]: Strongly prefer (high confidence)
         If None, skip confidence collection and always return 1.0
-
+    allow_ties : bool, optional (default=False)
+        If True, allow user to say options are equal/tie
+        If False, force strict preference
+    
     Returns
     -------
-    winner : int
-        Training index of preferred option
-    loser : int
-        Training index of dispreferred option
+    idx1 : int
+        First training index
+    idx2 : int
+        Second training index
+    comp_type : int
+        Comparison type:
+        - 0: idx1 > idx2 (first is better)
+        - 1: idx2 > idx1 (second is better)
+        - 2: idx1 ≈ idx2 (equal/tie) [only if allow_ties=True]
     confidence : float
         Confidence weight in range [0, 1]
-        - 1.0 if confidence_factors is None
-        - confidence_factors[i-1] for user input i ∈ {1, 2, 3}
     """
     # Get preference
     while True:
-        choice = input(f"Pair {pair_num}/{total_pairs} → Which is better? Enter 0 or 1:\n").strip()
+        if allow_ties:
+            prompt = (
+                f"Pair {pair_num}/{total_pairs} → Which is better?\n"
+                f"  0 = First option is better\n"
+                f"  1 = Second option is better\n"
+                f"  2 = They are tie\n"
+                f"Enter 0, 1, or 2: "
+            )
+        else:
+            prompt = f"Pair {pair_num}/{total_pairs} → Which is better? Enter 0 or 1:\n"
+
+        choice = input(prompt).strip()
+
         if choice == "0":
-            winner, loser = train_idx1, train_idx2
+            comp_type = 0  # train_idx1 > train_idx2
             break
         elif choice == "1":
-            winner, loser = train_idx2, train_idx1
+            comp_type = 1  # train_idx2 > train_idx1
+            break
+        elif choice == "2" and allow_ties:
+            comp_type = 2  # train_idx1 ≈ train_idx2
             break
         else:
-            print("Invalid input. Please enter 0 or 1.")
+            if allow_ties:
+                print("Invalid input. Please enter 0, 1, or 2.")
+            else:
+                print("Invalid input. Please enter 0 or 1.")
     
     # Get confidence if requested
     if confidence_factors is not None:
@@ -359,12 +383,18 @@ def get_user_preference(train_idx1, train_idx2, pair_num=1, total_pairs=1,
             else:
                 print("Invalid input. Please enter 1, 2, or 3.")
         
-        print(f"Recorded: {winner} > {loser} (confidence={confidence:.2f})")
     else:
         confidence = 1.0  # Default: fully confident
-        print(f"Recorded: {winner} > {loser}")
-    
-    return winner, loser, confidence
+
+        # Print summary
+    if comp_type == 0:
+        print(f"Recorded: {train_idx1} > {train_idx2} (confidence={confidence:.2f})")
+    elif comp_type == 1:
+        print(f"Recorded: {train_idx2} > {train_idx1} (confidence={confidence:.2f})")
+    elif comp_type == 2:
+        print(f"Recorded: {train_idx1} ≈ {train_idx2} (equal, confidence={confidence:.2f})")
+
+    return train_idx1, train_idx2, comp_type, confidence
 
 def sample_comparison_pairs(train_indices, n_pairs_per_point=1, best_train_idx=None, seed=None):
     """

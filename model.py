@@ -90,6 +90,91 @@ class ConfidenceWeightedMLL(nn.Module):
         
         return total_weighted_ll
 
+class ConfidenceWeightedMLLWithTies(nn.Module):
+    """
+    Marginal log likelihood with confidence weighting and tie support.
+    """
+    
+    def __init__(self, likelihood, model, confidence_weights, tolerance=0.1):
+        super().__init__()
+        self.likelihood = likelihood
+        self.model = model
+        self.tolerance = tolerance
+        
+        if confidence_weights.dtype != torch.float64:
+            confidence_weights = confidence_weights.double()
+        self.confidence_weights = confidence_weights
+        
+        # Normalize weights
+        if confidence_weights.sum() > 0:
+            self.normalized_weights = confidence_weights / confidence_weights.sum() * len(confidence_weights)
+        else:
+            self.normalized_weights = confidence_weights
+    
+    def forward(self, output, comparisons):
+        """
+        Compute weighted marginal log likelihood with tie support.
+        
+        Parameters
+        ----------
+        output : gpytorch posterior
+            GP posterior
+        comparisons : torch.Tensor
+            Comparisons with types, shape (n_comparisons, 3)
+            [:, 0] = first point index
+            [:, 1] = second point index
+            [:, 2] = type (0=first>second, 1=second>first, 2=equal)
+        """
+        mean = output.mean
+        variance = output.variance
+        
+        total_weighted_ll = torch.tensor(0.0, dtype=torch.float64, device=mean.device)
+        
+        for i in range(len(comparisons)):
+            idx_a = comparisons[i, 0].long()
+            idx_b = comparisons[i, 1].long()
+            comp_type = comparisons[i, 2].long()
+            
+            # Utility difference
+            mean_diff = mean[idx_a] - mean[idx_b]
+            
+            # Variance of difference
+            var_diff = variance[idx_a] + variance[idx_b]
+            std_diff = torch.sqrt(var_diff + 1e-6)
+            
+            if comp_type == 0:  # A > B
+                # P(A > B) = Φ((mean_diff - tolerance) / std_diff)
+                z_score = (mean_diff - self.tolerance) / std_diff
+                normal_cdf = 0.5 * (1 + torch.erf(z_score / torch.sqrt(torch.tensor(2.0, dtype=torch.float64))))
+                log_prob = torch.log(normal_cdf + 1e-8)
+                
+            elif comp_type == 1:  # B > A
+                # P(B > A) = Φ((-mean_diff - tolerance) / std_diff)
+                z_score = (-mean_diff - self.tolerance) / std_diff
+                normal_cdf = 0.5 * (1 + torch.erf(z_score / torch.sqrt(torch.tensor(2.0, dtype=torch.float64))))
+                log_prob = torch.log(normal_cdf + 1e-8)
+                
+            elif comp_type == 2:  # A ≈ B (equal/tie)
+                # P(|diff| < tolerance) = Φ((tolerance - |mean_diff|) / std_diff) - Φ((-tolerance - |mean_diff|) / std_diff)
+                abs_diff = torch.abs(mean_diff)
+                z_upper = (self.tolerance - abs_diff) / std_diff
+                z_lower = (-self.tolerance - abs_diff) / std_diff
+                
+                prob_upper = 0.5 * (1 + torch.erf(z_upper / torch.sqrt(torch.tensor(2.0, dtype=torch.float64))))
+                prob_lower = 0.5 * (1 + torch.erf(z_lower / torch.sqrt(torch.tensor(2.0, dtype=torch.float64))))
+                
+                log_prob = torch.log(prob_upper - prob_lower + 1e-8)
+            
+            else:
+                raise ValueError(f"Unknown comparison type: {comp_type}. Expected 0, 1, or 2.")
+            
+            # Weight by confidence
+            confidence = self.normalized_weights[i]
+            weighted_log_prob = confidence * log_prob
+            total_weighted_ll = total_weighted_ll + weighted_log_prob
+        
+        return total_weighted_ll
+
 class DeepKernelPairwiseGP(nn.Module):
     """
     PairwiseGP with deep kernel learning for high-dimensional inputs.
@@ -161,6 +246,8 @@ def train_dkpg(
     hidden_dims=[256, 128, 64],
     confidence_weights=None,
     use_custom_mll=None,
+    allow_ties=False,
+    tolerance=0.1,
     num_epochs=1000,
     lr_features=1e-4,
     lr_gp=1e-2,
@@ -191,6 +278,11 @@ def train_dkpg(
         If None (default), auto-select:
             - Use custom if confidence_weights provided
             - Use standard otherwise
+    allow_ties : bool
+        If True, expect comparisons to have 3 columns with type information
+        If False, expect standard 2-column format
+    tolerance : float
+        Tolerance for equal comparisons (only used if allow_ties=True)
     num_epochs : int
         Number of training epochs
     lr_features : float
@@ -219,6 +311,35 @@ def train_dkpg(
     else:
         comparisons = comparisons.long()
 
+    # Handle comparison format
+    if allow_ties:
+        # Expect 3 columns
+        if comparisons.shape[1] == 2:
+            # Convert old format: add type column (all type 0)
+            types = torch.zeros(len(comparisons), 1, dtype=torch.long, device=comparisons.device)
+            comparisons = torch.cat([comparisons, types], dim=1)
+        # Count comparison types
+        n_strict = ((comparisons[:, 2] == 0) | (comparisons[:, 2] == 1)).sum().item()
+        n_ties = (comparisons[:, 2] == 2).sum().item()
+        
+        # Extract strict comparisons for PairwiseGP initialization
+        strict_mask = comparisons[:, 2] != 2
+        strict_comparisons = comparisons[strict_mask, :2].clone()
+        
+        # Convert type 1 (second>first) to type 0 (first>second) by swapping indices
+        type_1_in_strict = comparisons[strict_mask, 2] == 1
+        strict_comparisons[type_1_in_strict] = strict_comparisons[type_1_in_strict].flip(1)
+
+    else:
+        # Standard 2-column format
+        if comparisons.shape[1] == 3:
+            # User provided 3 columns but allow_ties=False
+            comparisons = comparisons[:, :2]
+        
+        strict_comparisons = comparisons
+        n_strict = len(comparisons)
+        n_ties = 0
+
     # Confidence weights
     if confidence_weights is not None:
         if not isinstance(confidence_weights, torch.Tensor):
@@ -238,25 +359,30 @@ def train_dkpg(
 
     datapoints = datapoints.to(device)
     comparisons = comparisons.to(device)
+    strict_comparisons = strict_comparisons.to(device)
 
     # ===== MLL SELECTION LOGIC =====
     if use_custom_mll is None:
         # Auto-select: use custom if confidence weights are not all 1.0
         has_varying_confidence = not torch.allclose(
             confidence_weights, 
-            torch.ones_like(confidence_weights)
-        )
+            torch.ones_like(confidence_weights))
+        
+        has_ties = allow_ties and n_ties > 0
         use_custom_mll = has_varying_confidence
         
         if verbose:
-            if has_varying_confidence:
+            if has_ties:
+                print("Auto-selected: ConfidenceWeightedMLLWithTies (tie support)")
+            elif has_varying_confidence:
                 print("Auto-selected: Custom ConfidenceWeightedMLL (varying confidence weights)")
             else:
                 print("Auto-selected: Standard PairwiseLaplaceMarginalLogLikelihood (equal weights)")
     else:
         if verbose:
             if use_custom_mll:
-                print("User-selected: Custom ConfidenceWeightedMLL")
+                mll_name = "ConfidenceWeightedMLLWithTies" if (allow_ties and n_ties > 0) else "ConfidenceWeightedMLL"
+                print(f"User-selected: {mll_name}")
             else:
                 print("User-selected: Standard PairwiseLaplaceMarginalLogLikelihood")
 
@@ -274,18 +400,30 @@ def train_dkpg(
         {'params': model.gp_model.parameters(), 'lr': lr_gp}
     ])
 
-    # ===== MLL SELECTION =====
+    # ===== SELECT MLL =====
     if use_custom_mll:
-        # Use confidence-weighted MLL
-        mll = ConfidenceWeightedMLL(
-            model.gp_model.likelihood,
-            model.gp_model,
-            confidence_weights)
+        if allow_ties and n_ties > 0:
+            # Use tie-aware MLL
+            mll = ConfidenceWeightedMLLWithTies(
+                model.gp_model.likelihood,
+                model.gp_model,
+                confidence_weights,
+                tolerance=tolerance)
+            mll_name = "ConfidenceWeightedMLLWithTies"
+        else:
+            # Use standard confidence-weighted MLL
+            # Need to filter to only strict comparisons and their weights
+            mll = ConfidenceWeightedMLL(
+                model.gp_model.likelihood,
+                model.gp_model,
+                confidence_weights[strict_mask] if allow_ties else confidence_weights)
+            mll_name = "ConfidenceWeightedMLL"
     else:
-        # Use standard BoTorch MLL (faster, more accurate when weights are equal)
+        # Standard BoTorch MLL
         mll = PairwiseLaplaceMarginalLogLikelihood(
             model.gp_model.likelihood,
             model.gp_model)
+        mll_name = "PairwiseLaplaceMarginalLogLikelihood"
 
     model.train()
     losses = []
@@ -299,7 +437,13 @@ def train_dkpg(
         optimizer.zero_grad()
         model.update_gp_data()
         output = model.gp_model(*model.gp_model.train_inputs)
-        loss = -mll(output, model.gp_model.train_targets)
+        # Compute loss
+        if allow_ties and n_ties > 0 and use_custom_mll:
+            # Pass full comparisons (including ties) to tie-aware MLL
+            loss = -mll(output, comparisons)
+        else:
+            # Pass only strict comparisons to standard MLL
+            loss = -mll(output, model.gp_model.train_targets)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -313,7 +457,8 @@ def train_dkpg(
 
 
 def fit_dkpg(X_train, train_comp, confidence_weights=None, 
-             use_custom_mll=None, feature_dim=16, num_epochs=2000, verbose=True):
+             use_custom_mll=None, allow_ties=False, tolerance=0.1, 
+             feature_dim=16, num_epochs=1000, verbose=True):
     """
     Fit Deep Kernel PairwiseGP model with optional confidence weighting.
 
@@ -332,6 +477,10 @@ def fit_dkpg(X_train, train_comp, confidence_weights=None,
         - True: Use ConfidenceWeightedMLL (with weights=1.0 if not provided)
         - False: Use standard PairwiseLaplaceMarginalLogLikelihood
         - None (default): Auto-select based on confidence_weights
+    allow_ties : bool
+        If True, support tie/equal comparisons
+    tolerance : float
+        Tolerance for considering utilities equal (only if allow_ties=True)
     feature_dim : int
         Dimensionality of learned feature space
     num_epochs : int
@@ -361,14 +510,43 @@ def fit_dkpg(X_train, train_comp, confidence_weights=None,
         hidden_dims=[256, 128, 64],
         confidence_weights=confidence_weights,
         use_custom_mll=use_custom_mll,
+        allow_ties=allow_ties,
+        tolerance=tolerance,
         num_epochs=num_epochs,
         lr_features=1e-4,
         lr_gp=1e-2,
         verbose=verbose)
 
     pref_model = dkl_model.gp_model
-    # Create MLL for reference (matches what was used in training)
-    if confidence_weights is not None or use_custom_mll:
+
+   # Create MLL for reference (matches what was used in training)
+    if allow_ties:
+        # Check if there are actual ties
+        if not isinstance(train_comp, torch.Tensor):
+            train_comp_tensor = torch.from_numpy(train_comp).long()
+        else:
+            train_comp_tensor = train_comp
+        
+        has_ties = train_comp_tensor.shape[1] == 3 and (train_comp_tensor[:, 2] == 2).any()
+        
+        if has_ties:
+            conf_weights = dkl_model.confidence_weights
+            mll = ConfidenceWeightedMLLWithTies(
+                pref_model.likelihood,
+                pref_model,
+                conf_weights,
+                tolerance=tolerance)
+        elif confidence_weights is not None or use_custom_mll:
+            conf_weights = dkl_model.confidence_weights
+            mll = ConfidenceWeightedMLL(
+                pref_model.likelihood,
+                pref_model,
+                conf_weights)
+        else:
+            mll = PairwiseLaplaceMarginalLogLikelihood(
+                pref_model.likelihood,
+                pref_model)
+    elif confidence_weights is not None or use_custom_mll:
         # Use same confidence weights as training
         conf_weights = dkl_model.confidence_weights
         mll = ConfidenceWeightedMLL(
@@ -391,7 +569,23 @@ def fit_dkpg(X_train, train_comp, confidence_weights=None,
     return mll, pref_model, dkl_model
 
 def predict_utility(model, test_data, device='cuda' if torch.cuda.is_available() else 'cpu'):
-    """Predict utility for test data."""
+    """
+    Predict utility for test data.
+    model : DeepKernelPairwiseGP
+        Trained model
+    test_data : np.ndarray or torch.Tensor
+        Test features, shape (n_test, input_dim)
+    device : str
+        Device to use
+    
+    Returns
+    -------
+    mean : np.ndarray
+        Predicted utility means, shape (n_test,)
+    uncertainty : np.ndarray
+        Predicted variance, shape (n_test,)
+    """
+    
     if not isinstance(test_data, torch.Tensor):
         test_data = torch.from_numpy(test_data).double()
     else:

@@ -154,7 +154,8 @@ def plot_predictions(coords, y, coord_train, mean, var, step, total_steps):
     plt.close()
 
 def acquire_preference(img_full, train_indices, comparison_pairs, coords, spectra, v_step, 
-                       y_groundtruth=None, mode='human', confidence_factors=False):
+                       y_groundtruth=None, mode='human', confidence_factors=[0.5, 0.75, 1.0],
+                       allow_ties=True, tie_threshold=0.1):
     """
     Display all comparison pairs and acquire user preferences.
 
@@ -178,12 +179,19 @@ def acquire_preference(img_full, train_indices, comparison_pairs, coords, spectr
         Human or simulated mode
     confidence_factors: list
         confidence factors.
+    allow_ties : bool, optional (default=False)
+        If True, allow tie/equal comparisons
+    tie_threshold : float, optional (default=0.1)
+        Threshold for simulation (only if allow_ties=True)
 
     Returns
     -------
     new_comparisons : torch.Tensor
         Comparisons in format [winner_idx, loser_idx], shape (n_pairs, 2)
     """
+    new_comparisons = []
+    confidence_weights = []
+
     for pair_idx, (train_idx1, train_idx2) in enumerate(comparison_pairs):
         pool_idx1 = train_indices[train_idx1]
         pool_idx2 = train_indices[train_idx2]
@@ -196,30 +204,65 @@ def acquire_preference(img_full, train_indices, comparison_pairs, coords, spectr
 
         # Get preference
         if mode == 'simulated':
-            if y_groundtruth is None:
+            if y is None:
                 raise ValueError("Ground truth 'y' required for simulated mode")
-            winner, loser, confidence = get_simulated_preference(
+            
+            idx1, idx2, comp_type, confidence = get_simulated_preference(
                 train_idx1, train_idx2, train_indices, y_groundtruth,
                 pair_num=pair_idx + 1,
                 total_pairs=len(comparison_pairs),
-                confidence_factors=confidence_factors)
+                tie_threshold=tie_threshold,
+                confidence_factors=confidence_factors,
+                allow_ties=allow_ties
+            )
         
         elif mode == 'human':
-            winner, loser, confidence = get_user_preference(
+            idx1, idx2, comp_type, confidence = get_user_preference(
                 train_idx1, train_idx2,
                 pair_num=pair_idx + 1,
                 total_pairs=len(comparison_pairs),
-                confidence_factors=confidence_factors)
+                confidence_factors=confidence_factors,
+                allow_ties=allow_ties
+            )
+        
+        else:
+            raise ValueError(f"Unknown mode: {mode}. Use 'human' or 'simulated'.")
+        
+        new_comparisons.append([idx1, idx2, comp_type])
+        confidence_weights.append(confidence)
+        print(f"Recorded: train_idx {idx1} > train_idx {idx2}")
 
-        new_comparisons = [winner, loser]
-        print(f"Recorded: train_idx {winner} > train_idx {loser}")
+    return torch.tensor(new_comparisons, dtype=torch.long), torch.tensor(confidence_weights, dtype=torch.float64)
 
-    return torch.tensor(new_comparisons, dtype=torch.long), torch.tensor(confidence, dtype=torch.float64)
-
-def get_simulated_preference(train_idx1, train_idx2, train_indices, y_groundtruth, 
-                            pair_num=1, total_pairs=1, confidence_factors=[0.5, 0.75, 1.0]):
+def get_simulated_preference(train_idx1, train_idx2, train_indices, y_groundtruth, tie_threshold=0.1, 
+                            confidence_factors=[0.5, 0.75, 1.0], allow_ties=True):
     """
     Simulate user preference using ground truth.
+
+    Parameters
+    ----------
+    train_idx1, train_idx2 : int
+        Training indices to compare
+    train_indices : np.ndarray
+        Mapping from training indices to pool indices
+    y_groundtruth : np.ndarray
+        Ground truth utilities
+    tie_threshold : float, optional (default=0.1)
+        If |y1 - y2| < tie_threshold, consider it a tie
+        Only used if allow_ties=True
+    confidence_factors : list of float
+        Confidence levels for weak/medium/strong preferences
+    allow_ties : bool, optional (default=False)
+        If True, can return tie comparisons
+
+    Returns
+    -------
+    idx1, idx2 : int
+        Training indices
+    comp_type : int
+        0, 1, or 2
+    confidence : float
+        Confidence weight
     
     """
     pool_idx1 = train_indices[train_idx1]
@@ -228,34 +271,29 @@ def get_simulated_preference(train_idx1, train_idx2, train_indices, y_groundtrut
     y1 = y_groundtruth[pool_idx1]
     y2 = y_groundtruth[pool_idx2]
     
-    # Determine true preference
-    if y1 > y2:
-        winner = train_idx1
-        loser = train_idx2
-        utility_diff = y1 - y2
+    utility_diff = abs(y1 - y2)
+
+    # Determine comparison type based on ground truth
+    if allow_ties and utility_diff < tie_threshold:
+        # They're close enough to be equal
+        true_comp_type = 2
+        true_confidence = confidence_factors[2]
+    elif y1 > y2:
+        # First is better
+        true_comp_type = 0
+        # Confidence based on difference
+        true_confidence = confidence_factors[2]
+
     else:
-        winner = train_idx2
-        loser = train_idx1
-        utility_diff = y2 - y1
+        # Second is better
+        true_comp_type = 1
+        true_confidence = confidence_factors[2]
     
-    # Simulate confidence based on utility difference
-    if confidence_factors is not None:
-        # if utility_diff < 0.1:
-        #     confidence = 0.5
-        # elif utility_diff < 0.3:
-        #     confidence = 0.75
-        if y1 < 0.2 and y2 < 0.2:
-            confidence = confidence_factors[0]
-        elif utility_diff < 0.2:
-            confidence = confidence_factors[1]
-        else:
-            confidence = confidence_factors[2]
-    else:
-        confidence = 1.0
+    if true_comp_type == 0:
+        print(f"  → {train_idx1} > {train_idx2} (confidence={true_confidence:.2f})")
+    elif true_comp_type == 1:
+        print(f"  → {train_idx2} > {train_idx1} (confidence={true_confidence:.2f})")
+    elif true_comp_type == 2:
+        print(f"  → {train_idx1} ≈ {train_idx2} (equal, confidence={true_confidence:.2f})")
     
-    print(f"Pair {pair_num}/{total_pairs} simulated")
-    print(f"train_idx {train_idx1}: y={y1:.4f}")
-    print(f"train_idx {train_idx2}: y={y2:.4f}")
-    print(f"{winner} > {loser} (confidence={confidence:.2f})")
-    
-    return winner, loser, confidence
+    return train_idx1, train_idx2, true_comp_type, true_confidence
