@@ -205,6 +205,28 @@ class DeepKernelPairwiseGP(nn.Module):
 
         covar_module = ScaleKernel(RBFKernel(ard_num_dims=feature_dim))
 
+        # PairwiseGP only accepts (n, 2) format: [idx1, idx2]
+        # It doesn't understand comparison types (ties)
+        
+        if comparisons.shape[1] == 3:
+            # We have comparison types (3 columns)
+            # Extract only strict preferences (type 0 or 1)
+            strict_mask = comparisons[:, 2] != 2  # Not ties
+            strict_comparisons = comparisons[strict_mask, :2].clone()
+            
+            # Convert type 1 (second>first) to type 0 (first>second) by swapping
+            type_1_mask = comparisons[strict_mask, 2] == 1
+            strict_comparisons[type_1_mask] = strict_comparisons[type_1_mask].flip(1)
+            
+            # Store full comparisons for later use
+            self.full_comparisons = comparisons
+            self.has_ties = (comparisons[:, 2] == 2).any().item()
+        else:
+            # Standard 2-column format
+            strict_comparisons = comparisons
+            self.full_comparisons = comparisons
+            self.has_ties = False
+
         self.gp_model = PairwiseGP(
             datapoints=train_features,
             comparisons=comparisons,
@@ -313,30 +335,17 @@ def train_dkpg(
 
     # Handle comparison format
     if allow_ties:
-        # Expect 3 columns
         if comparisons.shape[1] == 2:
-            # Convert old format: add type column (all type 0)
+            # Add type column (all type 0)
             types = torch.zeros(len(comparisons), 1, dtype=torch.long, device=comparisons.device)
             comparisons = torch.cat([comparisons, types], dim=1)
+        
         # Count comparison types
         n_strict = ((comparisons[:, 2] == 0) | (comparisons[:, 2] == 1)).sum().item()
         n_ties = (comparisons[:, 2] == 2).sum().item()
-        
-        # Extract strict comparisons for PairwiseGP initialization
-        strict_mask = comparisons[:, 2] != 2
-        strict_comparisons = comparisons[strict_mask, :2].clone()
-        
-        # Convert type 1 (second>first) to type 0 (first>second) by swapping indices
-        type_1_in_strict = comparisons[strict_mask, 2] == 1
-        strict_comparisons[type_1_in_strict] = strict_comparisons[type_1_in_strict].flip(1)
-
     else:
-        # Standard 2-column format
         if comparisons.shape[1] == 3:
-            # User provided 3 columns but allow_ties=False
             comparisons = comparisons[:, :2]
-        
-        strict_comparisons = comparisons
         n_strict = len(comparisons)
         n_ties = 0
 
@@ -410,20 +419,30 @@ def train_dkpg(
                 confidence_weights,
                 tolerance=tolerance)
             mll_name = "ConfidenceWeightedMLLWithTies"
+            train_with_full_comparisons = True
         else:
-            # Use standard confidence-weighted MLL
-            # Need to filter to only strict comparisons and their weights
+            # Standard confidence-weighted MLL
+            # Only use weights for strict comparisons
+            if allow_ties and comparisons.shape[1] == 3:
+                strict_mask = comparisons[:, 2] != 2
+                conf_weights_strict = confidence_weights[strict_mask]
+            else:
+                conf_weights_strict = confidence_weights
+                
             mll = ConfidenceWeightedMLL(
                 model.gp_model.likelihood,
                 model.gp_model,
-                confidence_weights[strict_mask] if allow_ties else confidence_weights)
+                conf_weights_strict
+            )
             mll_name = "ConfidenceWeightedMLL"
+            train_with_full_comparisons = False
     else:
         # Standard BoTorch MLL
         mll = PairwiseLaplaceMarginalLogLikelihood(
             model.gp_model.likelihood,
             model.gp_model)
         mll_name = "PairwiseLaplaceMarginalLogLikelihood"
+        train_with_full_comparisons = False
 
     model.train()
     losses = []
@@ -438,7 +457,7 @@ def train_dkpg(
         model.update_gp_data()
         output = model.gp_model(*model.gp_model.train_inputs)
         # Compute loss
-        if allow_ties and n_ties > 0 and use_custom_mll:
+        if train_with_full_comparisons:
             # Pass full comparisons (including ties) to tie-aware MLL
             loss = -mll(output, comparisons)
         else:
