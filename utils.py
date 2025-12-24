@@ -272,7 +272,7 @@ def get_simulated_preference(train_idx1, train_idx2, train_indices, y_groundtrut
     utility_diff = abs(y1 - y2)
 
     # Determine comparison type based on ground truth
-    if y1<0.2 or y2<0.2:
+    if y1<0.2 and y2<0.2:
         true_confidence = confidence_factors[0]
         if allow_ties and utility_diff < tie_threshold:
             # They're close enough to be equal
