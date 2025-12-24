@@ -280,12 +280,18 @@ def get_simulated_preference(train_idx1, train_idx2, train_indices, y_groundtrut
         # First is better
         true_comp_type = 0
         # Confidence based on difference
-        true_confidence = confidence_factors[2]
+        if y1 < 0.2:
+            true_confidence = confidence_factors[0]
+        else:
+            true_confidence = confidence_factors[2]
 
     else:
         # Second is better
         true_comp_type = 1
-        true_confidence = confidence_factors[2]
+        if y2 < 0.2:
+            true_confidence = confidence_factors[0]
+        else:
+            true_confidence = confidence_factors[2]
     
     if true_comp_type == 0:
         print(f"{train_idx1} > {train_idx2} (confidence={true_confidence:.2f})")
