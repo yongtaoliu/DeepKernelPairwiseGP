@@ -368,7 +368,6 @@ def train_dkpg(
 
     datapoints = datapoints.to(device)
     comparisons = comparisons.to(device)
-    strict_comparisons = strict_comparisons.to(device)
 
     # ===== MLL SELECTION LOGIC =====
     if use_custom_mll is None:

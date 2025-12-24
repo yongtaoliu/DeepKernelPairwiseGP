@@ -288,10 +288,10 @@ def get_simulated_preference(train_idx1, train_idx2, train_indices, y_groundtrut
         true_confidence = confidence_factors[2]
     
     if true_comp_type == 0:
-        print(f"  → {train_idx1} > {train_idx2} (confidence={true_confidence:.2f})")
+        print(f"{train_idx1} > {train_idx2} (confidence={true_confidence:.2f})")
     elif true_comp_type == 1:
-        print(f"  → {train_idx2} > {train_idx1} (confidence={true_confidence:.2f})")
+        print(f"{train_idx2} > {train_idx1} (confidence={true_confidence:.2f})")
     elif true_comp_type == 2:
-        print(f"  → {train_idx1} ≈ {train_idx2} (equal, confidence={true_confidence:.2f})")
+        print(f"{train_idx1} ≈ {train_idx2} (equal, confidence={true_confidence:.2f})")
     
     return train_idx1, train_idx2, true_comp_type, true_confidence
