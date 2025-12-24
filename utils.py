@@ -268,7 +268,8 @@ def get_simulated_preference(train_idx1, train_idx2, train_indices, y_groundtrut
     
     y1 = y_groundtruth[pool_idx1]
     y2 = y_groundtruth[pool_idx2]
-    
+    print (f"y1: {y1}")
+    print (f"y2: {y2}")
     utility_diff = abs(y1 - y2)
 
     # Determine comparison type based on ground truth
