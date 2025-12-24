@@ -204,7 +204,7 @@ def acquire_preference(img_full, train_indices, comparison_pairs, coords, spectr
 
         # Get preference
         if mode == 'simulated':
-            if y is None:
+            if y_groundtruth is None:
                 raise ValueError("Ground truth 'y' required for simulated mode")
             
             idx1, idx2, comp_type, confidence = get_simulated_preference(
